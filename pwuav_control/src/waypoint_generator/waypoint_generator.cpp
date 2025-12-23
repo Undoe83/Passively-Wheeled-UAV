@@ -9,10 +9,10 @@
 class WaypointPublisher : public rclcpp::Node
 {
 public:
-    WaypointPublisher() : Node("waypoint_generator")
+    WaypointPublisher(const std::string& type) : Node("waypoint_generator")
     {
         // Declare and get the waypoint type parameter
-        this->declare_parameter<std::string>("waypoint_type", "eight");
+        this->declare_parameter<std::string>("waypoint_type", type);
         this->get_parameter("waypoint_type", waypoint_type_);
 
         // Create a publisher for the waypoints
@@ -68,7 +68,13 @@ private:
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<WaypointPublisher>());
+
+    std::string type = "eight";
+    if (argc > 1) {
+        type = std::string(argv[1]);
+    }
+
+    rclcpp::spin(std::make_shared<WaypointPublisher>(type));
     rclcpp::shutdown();
     return 0;
 }
