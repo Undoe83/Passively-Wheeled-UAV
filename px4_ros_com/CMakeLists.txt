@@ -26,11 +26,6 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rclpy REQUIRED)
-find_package(tf2 REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
-find_package(trajectory_msgs REQUIRED)
-find_package(visualization_msgs REQUIRED)
-find_package(casadi REQUIRED)
 
 #################
 # Setup targets #
@@ -78,36 +73,6 @@ install(TARGETS offboard_control DESTINATION lib/${PROJECT_NAME})
 add_executable(offboard_control_srv src/examples/offboard/offboard_control_srv.cpp)
 ament_target_dependencies(offboard_control_srv rclcpp px4_msgs)
 install(TARGETS offboard_control_srv DESTINATION lib/${PROJECT_NAME})
-
-# waypoint_generator/waypoint_generator
-add_executable(waypoint_generator src/waypoint_generator/waypoint_generator.cpp)
-ament_target_dependencies(waypoint_generator rclcpp nav_msgs geometry_msgs tf2 tf2_geometry_msgs)
-install(TARGETS waypoint_generator DESTINATION lib/${PROJECT_NAME})
-
-# waypoint_generator/reference_path_publisher
-add_executable(reference_path_publisher src/waypoint_generator/reference_path_publisher.cpp)
-ament_target_dependencies(reference_path_publisher rclcpp nav_msgs px4_msgs tf2 tf2_geometry_msgs)
-install(TARGETS reference_path_publisher DESTINATION lib/${PROJECT_NAME})
-
-# traj_opt/trajectory_optimizer
-# add_executable(trajectory_optimizer src/traj_opt/trajectory_optimizer.cpp)
-# ament_target_dependencies(trajectory_optimizer rclcpp nav_msgs trajectory_msgs visualization_msgs)
-# install(TARGETS trajectory_optimizer DESTINATION lib/${PROJECT_NAME})
-
-# controller
-add_executable(mpc_controller_node src/controller/mpc.cpp)
-ament_target_dependencies(mpc_controller_node rclcpp px4_msgs nav_msgs casadi tf2 tf2_geometry_msgs)
-target_link_libraries(mpc_controller_node frame_transforms)
-if(TARGET casadi::casadi)
-	target_link_libraries(mpc_controller_node casadi::casadi)
-else()
-	# Fallback: link against ${casadi_LIBRARIES} if provided by the find_package
-	if(DEFINED casadi_LIBRARIES)
-		target_link_libraries(mpc_controller_node ${casadi_LIBRARIES})
-	endif()
-endif()
-install(TARGETS mpc_controller_node DESTINATION lib/${PROJECT_NAME})
-
 
 ############
 # Install ##
