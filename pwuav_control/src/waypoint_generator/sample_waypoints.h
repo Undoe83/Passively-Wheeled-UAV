@@ -110,7 +110,7 @@ namespace sample_waypoints
     nav_msgs::msg::Path eight()
     {
         double r = 1.0;
-        double h = 0.0;
+        double h = 2.0;
         int segments = 30;
         
         nav_msgs::msg::Path waypoints;

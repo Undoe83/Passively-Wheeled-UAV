@@ -8,13 +8,13 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(px4_msgs REQUIRED)
-find_package(px4_ros_com REQUIRED)
+find_package(mavros_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(casadi REQUIRED)
+find_package(Eigen3 REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -28,13 +28,15 @@ install(TARGETS waypoint_generator DESTINATION lib/${PROJECT_NAME})
 
 # waypoint_generator/reference_path_publisher
 add_executable(reference_path_publisher src/waypoint_generator/reference_path_publisher.cpp)
-ament_target_dependencies(reference_path_publisher rclcpp nav_msgs px4_msgs tf2 tf2_geometry_msgs)
+ament_target_dependencies(reference_path_publisher rclcpp nav_msgs tf2 tf2_geometry_msgs)
 install(TARGETS reference_path_publisher DESTINATION lib/${PROJECT_NAME})
 
 # controller
 add_executable(mpc_controller_node src/controller/mpc.cpp)
-ament_target_dependencies(mpc_controller_node rclcpp px4_msgs px4_ros_com nav_msgs casadi tf2 tf2_geometry_msgs)
-target_link_libraries(mpc_controller_node ${px4_ros_com_LIBRARIES})
+target_include_directories(mpc_controller_node PUBLIC
+  ${EIGEN3_INCLUDE_DIRS}
+)
+ament_target_dependencies(mpc_controller_node rclcpp nav_msgs casadi tf2 tf2_geometry_msgs mavros_msgs)
 if(TARGET casadi::casadi)
 	target_link_libraries(mpc_controller_node casadi::casadi)
 else()

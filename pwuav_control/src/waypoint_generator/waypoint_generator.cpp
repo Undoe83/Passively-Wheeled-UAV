@@ -49,7 +49,7 @@ private:
             waypoints_msg_ = sample_waypoints::circle();
         }
 
-        waypoints_msg_.header.frame_id = "world";
+        waypoints_msg_.header.frame_id = "map";
     }
 
     void publish_waypoints()

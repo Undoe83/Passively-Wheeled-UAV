@@ -2,26 +2,24 @@
 #include <casadi/casadi.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
-#include <px4_msgs/msg/trajectory_setpoint.hpp>
-#include <px4_msgs/msg/vehicle_attitude_setpoint.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <mavros_msgs/msg/attitude_target.hpp>
+#include <mavros_msgs/msg/state.hpp>
+#include <mavros_msgs/srv/command_bool.hpp>
+#include <mavros_msgs/srv/set_mode.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
-#include <px4_ros_com/frame_transforms.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include <std_msgs/msg/float32.hpp>
-
 #include <Eigen/Dense>
 #include <numeric>
 #include <algorithm>
 #include <cmath>
-using namespace casadi;
-using namespace px4_ros_com::frame_transforms;
-using namespace px4_ros_com::frame_transforms::utils::quaternion;
 
-/**
-* @brief 모든 최적화 과정은 ENU 프레임(ROS2 표준프레임) 기준임.
-*/
+using namespace casadi;
 
 class Mpc : public rclcpp::Node {
 public:
@@ -34,8 +32,7 @@ private:
     // --- MPC 파라미터 ---
     int N_ = 29;        // 예측 호라이즌 (만약 reference 지점 30개 -> N+1=30)
     double dt_ = 1.0 / 20.0;   // 샘플링 타임 (1.0 / rate of reference path)
-    int NX_;    // 상태 변수 개수
-    int NU_;    // 제어 입력 개수
+    int NX_, NU_;    // 상태, 제어 입력 개수
 
     // --- CasADi 객체 ---
     Opti opti_;
@@ -45,14 +42,19 @@ private:
     MX X_ref_; // 파라미터: 기준 궤적
 
     // --- ROS 2 ---
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr vx_cmd_pub_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr vx_current_pub_;
-
+    mavros_msgs::msg::State current_state_mavros_;
+    rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
-    rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
-    rclcpp::Publisher<px4_msgs::msg::VehicleAttitudeSetpoint>::SharedPtr att_setpoint_pub_;
+    
+    rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr setpoint_pub_;
+    rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr att_setpoint_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr optimal_path_pub_;
+    
+    rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
+    rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
+    rclcpp::Time last_request_time_;
+
     rclcpp::TimerBase::SharedPtr control_timer_;
 
     // --- 상태 및 궤적 변수 (모두 NED 프레임 기준) ---
@@ -90,6 +92,7 @@ private:
     double prev_vel_err_ = 0.0;
 
     // --- ROS 콜백 함수 ---
+    void state_callback(const mavros_msgs::msg::State::SharedPtr msg);
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
     void path_callback(const nav_msgs::msg::Path::SharedPtr msg);
     
@@ -97,13 +100,11 @@ private:
     void control_loop_callback();
 
     // --- 설정 및 유틸리티 함수 ---
+    void offboard_mode();
     void setup_mpc();
 
     void get_rpy_from_ros_quaternion(const geometry_msgs::msg::Quaternion& q, double& roll, double& pitch, double& yaw);
     double unwrap_angle_diff(double ref_angle, double last_angle);
-    void transform_enu_to_ned(px4_msgs::msg::TrajectorySetpoint& msg,
-                              const casadi::DM& u_optimal_enu,
-                              uint64_t timestamp);
 };
 
 
@@ -120,26 +121,30 @@ Mpc::Mpc() : Node("mpc_controller_node") {
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
+    state_sub_ = this->create_subscription<mavros_msgs::msg::State>(
+        "/mavros/state", 10, 
+        std::bind(&Mpc::state_callback, this, std::placeholders::_1));
+    
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/px4/odom", qos,
+        "/mavros/local_position/odom", qos,
         std::bind(&Mpc::odom_callback, this, std::placeholders::_1));
 
     path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
         "/reference_path", 10, // 일반적인 ROS 토픽 QoS
         std::bind(&Mpc::path_callback, this, std::placeholders::_1));
 
-    setpoint_pub_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>(
-        "/fmu/in/trajectory_setpoint", qos);
+    setpoint_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>(
+        "/mavros/setpoint_velocity/cmd_vel", 10);
 
-    att_setpoint_pub_ = this->create_publisher<px4_msgs::msg::VehicleAttitudeSetpoint>(
-        "/fmu/in/vehicle_attitude_setpoint_v1", qos);
+    att_setpoint_pub_ = this->create_publisher<mavros_msgs::msg::AttitudeTarget>(
+        "/mavros/setpoint_raw/attitude", 10);
 
     optimal_path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
         "optimal_path", 10);
 
-    
-    vx_cmd_pub_ = this->create_publisher<std_msgs::msg::Float32>("vx_cmd", qos);
-    vx_current_pub_ = this->create_publisher<std_msgs::msg::Float32>("vx_current", qos);
+    arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
+    set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
+    last_request_time_ = this->get_clock()->now();
 
     // 제어 루프 타이머 (PX4 Offboard mode 최소 요구 속도(2Hz)보다 빠름)
     // MPC 계산 시간(dt_)과 반드시 같을 필요는 없음
@@ -221,6 +226,10 @@ void Mpc::setup_mpc() {
     // RCLCPP_INFO(this->get_logger(), "MPC (4-State, 4-Control).");
 }
 
+void Mpc::state_callback(const mavros_msgs::msg::State::SharedPtr msg) {
+    current_state_mavros_ = *msg;
+}
+
 void Mpc::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     current_state_(0) = msg->pose.pose.position.x; // x
     current_state_(1) = msg->pose.pose.position.y; // y
@@ -293,7 +302,8 @@ void Mpc::control_loop_callback() {
 
         return;
     }
-    
+
+    offboard_mode();
     uint64_t timestamp_now = this->get_clock()->now().nanoseconds() / 1000;
 
     try {
@@ -322,23 +332,17 @@ void Mpc::control_loop_callback() {
         // --- visualization optimal path ---
         nav_msgs::msg::Path optimal_path_msg;
         optimal_path_msg.header.stamp = this->get_clock()->now();
-        optimal_path_msg.header.frame_id = "world";
+        optimal_path_msg.header.frame_id = "map";
 
         for (int k = 0; k < (N_ + 1); ++k) {
             geometry_msgs::msg::PoseStamped pose_stamped;
-            pose_stamped.header = optimal_path_msg.header;
-
             pose_stamped.pose.position.x = (double)X_optimal(0, k);
             pose_stamped.pose.position.y = (double)X_optimal(1, k);
             pose_stamped.pose.position.z = (double)X_optimal(2, k);
             
-            double yaw = (double)X_optimal(3, k);
-            Eigen::Quaterniond q = quaternion_from_euler(0.0, 0.0, yaw);
-
-            pose_stamped.pose.orientation.x = q.x();
-            pose_stamped.pose.orientation.y = q.y();
-            pose_stamped.pose.orientation.z = q.z();
-            pose_stamped.pose.orientation.w = q.w();
+            tf2::Quaternion q;
+            q.setRPY(0, 0, (double)X_optimal(3, k));
+            pose_stamped.pose.orientation = tf2::toMsg(q);
 
             optimal_path_msg.poses.push_back(pose_stamped);
         }
@@ -347,9 +351,14 @@ void Mpc::control_loop_callback() {
 
         if (current_mode_ == Mode::AERIAL) {
             DM u_optimal = sol.value(U_(Slice(), 0));  // [vx, vy, vz, yaw_rate]
-            auto setpoint_msg = px4_msgs::msg::TrajectorySetpoint();
-            transform_enu_to_ned(setpoint_msg, u_optimal, timestamp_now);
-            setpoint_pub_->publish(setpoint_msg);
+            geometry_msgs::msg::TwistStamped vel_msg;
+            vel_msg.header.stamp = this->get_clock()->now();
+            vel_msg.header.frame_id = "base_link"; // 또는 "map"에 맞춰 성분 변환
+            vel_msg.twist.linear.x = (double)u_optimal(0);
+            vel_msg.twist.linear.y = (double)u_optimal(1);
+            vel_msg.twist.linear.z = (double)u_optimal(2);
+            vel_msg.twist.angular.z = (double)u_optimal(3);
+            setpoint_pub_->publish(vel_msg);
         } else {  // Mode::TERRESTRIAL
             DM x_ref_k1 = sol.value(X_(Slice(), 19)); // MPC가 계획한 17 스텝 상태 [x, y, z, yaw]
             DM u_ref_k1 = sol.value(U_(Slice(), 1)); // MPC가 계획한 1스텝 제어입력 [vx, vy, vz, yaw_rate]
@@ -414,39 +423,50 @@ void Mpc::control_loop_callback() {
 
             RCLCPP_INFO(this->get_logger(), "| Thrust: %f | Pitch: %f | Yaw: %f |", thrust_cmd, pitch_enu, yaw_enu);
 
-            auto att_msg = px4_msgs::msg::VehicleAttitudeSetpoint();
-            att_msg.timestamp = timestamp_now;
-
-            // att_msg.yaw_sp_move_rate = -(double)u_ref_k0(3);
-
-            const Eigen::Quaterniond q_enu_flu = quaternion_from_euler(0.0, pitch_enu, yaw_enu);
-            const Eigen::Quaterniond q_ned_frd = ros_to_px4_orientation(q_enu_flu);
+            mavros_msgs::msg::AttitudeTarget att_msg;
+            att_msg.header.stamp = this->get_clock()->now();
+            att_msg.type_mask = mavros_msgs::msg::AttitudeTarget::IGNORE_ROLL_RATE |
+                                mavros_msgs::msg::AttitudeTarget::IGNORE_PITCH_RATE |
+                                mavros_msgs::msg::AttitudeTarget::IGNORE_YAW_RATE;
             
-            att_msg.q_d[0] = q_ned_frd.w();
-            att_msg.q_d[1] = q_ned_frd.x();
-            att_msg.q_d[2] = q_ned_frd.y();
-            att_msg.q_d[3] = q_ned_frd.z();
-
-            att_msg.thrust_body[0] = 0.0;
-            att_msg.thrust_body[1] = 0.0;
-            att_msg.thrust_body[2] = -thrust_cmd;
-
+            tf2::Quaternion q;
+            q.setRPY(0.0, pitch_enu, yaw_enu);
+            att_msg.orientation = tf2::toMsg(q);
+            att_msg.thrust = thrust_cmd; 
 
             att_setpoint_pub_->publish(att_msg);
 
             // RCLCPP_INFO(this->get_logger(), "command | thrust: %f", thrust_cmd);
-
-            std_msgs::msg::Float32 vx_cmd_msg;
-            vx_cmd_msg.data = vx_ref_body;
-            vx_cmd_pub_->publish(vx_cmd_msg);
-
-            std_msgs::msg::Float32 vx_current_msg;
-            vx_current_msg.data = vx_body_current_;
-            vx_current_pub_->publish(vx_current_msg);
         }
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "MPC optimization failed: %s", e.what());
         return;
+    }
+}
+
+void Mpc::offboard_mode() {
+    auto now = this->get_clock()->now();
+
+    if (now - last_request_time_ < rclcpp::Duration::from_seconds(5.0)) {
+        return;
+    }
+
+    if (current_state_mavros_.mode != "OFFBOARD") {
+        auto set_mode_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+        set_mode_req->custom_mode = "OFFBOARD";
+        
+        RCLCPP_INFO(this->get_logger(), "Requesting Offboard mode...");
+        set_mode_client_->async_send_request(set_mode_req);
+        last_request_time_ = now;
+    } 
+    // 2. Offboard 모드이지만 시동이 안 걸렸을 경우 시동 요청
+    else if (!current_state_mavros_.armed) {
+        auto arming_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
+        arming_req->value = true;
+        
+        RCLCPP_INFO(this->get_logger(), "Requesting Arming...");
+        arming_client_->async_send_request(arming_req);
+        last_request_time_ = now;
     }
 }
 
@@ -461,28 +481,9 @@ double Mpc::unwrap_angle_diff(double ref_angle, double last_angle) {
     return atan2(sin(diff), cos(diff));
 }
 
-void Mpc::transform_enu_to_ned(px4_msgs::msg::TrajectorySetpoint& msg, const DM& u_optimal_enu, uint64_t timestamp) {
-    msg.timestamp = timestamp;
-    msg.velocity[0] = (double)u_optimal_enu(1);
-    msg.velocity[1] = (double)u_optimal_enu(0);
-    msg.velocity[2] = -(double)u_optimal_enu(2);
-    msg.yawspeed = -(double)u_optimal_enu(3);
-
-    msg.position[0] = NAN;
-    msg.position[1] = NAN;
-    msg.position[2] = NAN;
-    msg.yaw = NAN;
-    msg.acceleration[0] = NAN;
-    msg.acceleration[1] = NAN;
-    msg.acceleration[2] = NAN;
-}
-
 int main(int argc, char* argv[]) {
     rclcpp::init(argc, argv);
-    
-    auto node = std::make_shared<Mpc>();
-    rclcpp::spin(node);
-    
+    rclcpp::spin(std::make_shared<Mpc>());
     rclcpp::shutdown();
     return 0;
 }
