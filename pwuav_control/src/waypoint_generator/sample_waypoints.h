@@ -109,8 +109,8 @@ namespace sample_waypoints
 
     nav_msgs::msg::Path eight()
     {
-        double r = 1.0;
-        double h = 2.0;
+        double r = 3.0;
+        double h = 0.0;
         int segments = 30;
         
         nav_msgs::msg::Path waypoints;
@@ -132,8 +132,8 @@ namespace sample_waypoints
             double angle = -M_PI / 2 - i * 2 * M_PI / segments;
             pt.pose.position.x = center1_x + r * cos(angle);
             pt.pose.position.y = center1_y + r * sin(angle);
-            pt.pose.position.z = h;
-            // pt.pose.position.z = h - (h / 2) * cos(2 * M_PI * i / segments);
+            // pt.pose.position.z = h;
+            pt.pose.position.z = h - (h / 2) * cos(2 * M_PI * i / segments);
             waypoints.poses.push_back(pt);
         }
         
@@ -145,8 +145,8 @@ namespace sample_waypoints
             double angle = M_PI / 2 - i * 2 * M_PI / segments;
             pt.pose.position.x = center2_x + -r * cos(angle);
             pt.pose.position.y = center2_y + r * sin(angle);
-            pt.pose.position.z = h;
-            // pt.pose.position.z = h - (h / 2) * cos(2 * M_PI * i / segments);
+            // pt.pose.position.z = h;
+            pt.pose.position.z = h - (h / 2) * cos(2 * M_PI * i / segments);
             waypoints.poses.push_back(pt);
         }
         
