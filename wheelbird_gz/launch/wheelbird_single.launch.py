@@ -47,7 +47,8 @@ def launch_setup(context, *args, **kwargs):
     )
 
     config_file_name = f'wheelbird{instance_id}_config.yaml'
-    config_file_path = os.path.join('/home/ubuntu/px4_ws/src/wheelbird_gz', 'config', config_file_name)
+    config_share = get_package_share_directory('wheelbird_gz')
+    config_file_path = os.path.join(config_share, 'config', config_file_name)
 
     mavros_share = get_package_share_directory('mavros')
     px4_pluginlists = os.path.join(mavros_share, 'launch', 'px4_pluginlists.yaml')
