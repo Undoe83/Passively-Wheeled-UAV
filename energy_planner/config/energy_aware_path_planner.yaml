@@ -1,0 +1,52 @@
+energy_path_planner:
+  ros__parameters:
+    robots: ["wheelbird1", "wheelbird2", "wheelbird3", "wheelbird4"]
+    energy_aware_path_planner:
+      common:
+        exit_after_all: false
+        publish_topics: true
+        reservation_param_root: "/reservations"
+
+      wheelbird1:
+        priority: 1
+        start_xyz: [2.0,  3.6, 0.0]
+        goal_xyz:  [17.5, -3.6, 0.0]
+      wheelbird2:
+        priority: 2
+        start_xyz: [2.0,  1.2, 0.0]
+        goal_xyz:  [17.5, -1.2, 0.0]
+      wheelbird3:
+        priority: 3
+        start_xyz: [2.0, -1.2, 0.0]
+        goal_xyz:  [17.5, 1.2, 0.0]
+      wheelbird4:
+        priority: 4
+        start_xyz: [2.0, -3.6, 0.0]
+        goal_xyz:  [17.5, 3.6, 0.0]
+
+    gamma_air_eff_: 1.0 ## 공중 이동 가중치
+    e_grd_jpm: 55.0 ## 단위 지상 이동 에너지(1m)
+    e_air_jpm: 185.0 ## 단위 공중 이동 에너지(1m)
+    e_wait_grd_jps: 20.0 ## 단위 지상 대기 전력 소모량(1s)
+    v_grd_mps: 0.55 ## 속도 정보   
+    v_air_mps: 0.55 ## 속도 정보
+    w_e: 1.0
+    w_t: 0.0
+    ground_threshold_m: 0.0
+
+    conflict_radius_m: 1.2
+    goal_hold_s: 0.0
+    time_bin_s: 0.1 
+    z_sep_m: 0.8
+    coll_samples: 2 
+    r_hard_ratio: 0.8
+    allow_wait: true
+
+    k_len_ratio: 1.0
+    alpha_wait_s_per_m: 1.0
+
+reference_path_publisher:
+  ros__parameters:
+    robot_names: ["wheelbird1", "wheelbird2", "wheelbird3", "wheelbird4"]
+    horizon_length: 30
+    publish_rate: 20.0
