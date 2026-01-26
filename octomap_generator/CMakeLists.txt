@@ -23,8 +23,8 @@ include_directories(
   ${tinyxml2_INCLUDE_DIRS}
 )
 
-add_executable(octomap_publish_node src/octomap_publish_node.cpp)
-ament_target_dependencies(octomap_publish_node
+add_library(octomap_publisher_lib src/octomap_publisher.cpp)
+ament_target_dependencies(octomap_publisher_lib
   rclcpp
   std_msgs
   visualization_msgs
@@ -32,13 +32,21 @@ ament_target_dependencies(octomap_publish_node
   tf2
   tf2_geometry_msgs
 )
-
-target_link_libraries(octomap_publish_node
+target_link_libraries(octomap_publisher_lib
   ${octomap_LIBRARIES}
   ${tinyxml2_LIBRARIES}
 )
 
-install(TARGETS octomap_publish_node
+add_executable(octomap_publish_node src/octomap_publish_node.cpp)
+ament_target_dependencies(octomap_publish_node
+  rclcpp
+)
+target_link_libraries(octomap_publish_node
+  octomap_publisher_lib
+)
+
+install(TARGETS
+  octomap_publish_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
