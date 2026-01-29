@@ -20,8 +20,8 @@ namespace sample_waypoints
         pt.pose.position.z = h;
         waypoints.poses.push_back(pt);
 
-        pt.pose.position.x = -100.0;
-        pt.pose.position.y = 0;
+        pt.pose.position.x = 50.0;
+        pt.pose.position.y = 0.0;
         pt.pose.position.z = h;
         waypoints.poses.push_back(pt);
 
@@ -109,8 +109,8 @@ namespace sample_waypoints
 
     nav_msgs::msg::Path eight()
     {
-        double r = 3.0;
-        double h = 0.0;
+        double r = 2.0;
+        double h = 1.0;
         int segments = 30;
         
         nav_msgs::msg::Path waypoints;
@@ -151,6 +151,25 @@ namespace sample_waypoints
         }
         
         return waypoints;   
+    }
+
+    nav_msgs::msg::Path hover()
+    {
+        double h = 2.0;
+        nav_msgs::msg::Path waypoints;
+        geometry_msgs::msg::PoseStamped pt;
+
+        pt.pose.position.x = 0.0;
+        pt.pose.position.y = 0.0;
+        pt.pose.position.z = h;
+        waypoints.poses.push_back(pt);
+
+        pt.pose.position.x = 10.0;
+        pt.pose.position.y = 0.0;
+        pt.pose.position.z = h;
+        waypoints.poses.push_back(pt);
+
+        return waypoints;
     }
 } // namespace sample_waypoints
 

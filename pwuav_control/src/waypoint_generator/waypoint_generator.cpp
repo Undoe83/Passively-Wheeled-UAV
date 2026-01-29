@@ -43,6 +43,10 @@ private:
         {
             waypoints_msg_ = sample_waypoints::eight();
         }
+        else if (waypoint_type_ == "hover")
+        {
+            waypoints_msg_ = sample_waypoints::hover();
+        }
         else
         {
             RCLCPP_WARN(this->get_logger(), "Unknown waypoint type '%s', defaulting to 'circle'", waypoint_type_.c_str());

@@ -1,0 +1,17 @@
+kd_v: 0.01
+kf_thrust_scale: 24.0
+ki_v: 0.01
+kp_p: 0.06
+kp_v: 0.5
+pos_err_threshold_norm: 0.4
+q_xyz: 8.0
+q_yaw: 8.0
+qos_overrides./parameter_events.publisher.depth: 1000
+qos_overrides./parameter_events.publisher.durability: volatile
+qos_overrides./parameter_events.publisher.history: keep_last
+qos_overrides./parameter_events.publisher.reliability: reliable
+r_delta: 5.0
+r_vxyz: 0.8
+r_yaw: 0.8
+thrust_hover: 0.4
+use_sim_time: false

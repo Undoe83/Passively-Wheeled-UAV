@@ -4,6 +4,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
@@ -19,12 +20,35 @@
 #include <algorithm>
 #include <cmath>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+
 using namespace casadi;
 
 class Mpc : public rclcpp::Node {
 public:
     Mpc();
 private:
+    // ... (rest of the enums and member variables)
+
+    // --- Dynamic Reconfigurable Parameters ---
+    double THRUST_HOVER_;
+    double KF_THRUST_SCALE_;
+    double Kp_P_;
+    double Kp_V_;
+    double Ki_V_;
+    double Kd_V_;
+    double Q_xyz_;
+    double Q_yaw_;
+    double R_vxyz_;
+    double R_yaw_;
+    double R_delta_;
+    double POS_ERR_THRESHOLD_NORM_;
+    double Step_Size_;
+
+    // --- Parameter Callback Handle ---
+    rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
+
+
     enum class Mode {UNKNOWN, AERIAL, TERRESTRIAL};
     Mode current_mode_ = Mode::UNKNOWN;
     double z_avg_threshold_ = 0.1; // reference의 z 좌표 평균을 이용 (NED)
@@ -50,6 +74,10 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr setpoint_pub_;
     rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr att_setpoint_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr optimal_path_pub_;
+
+    // -- for parameter tuning --
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr debug_vel_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr debug_yaw_pub_;
     
     rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
     rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
@@ -71,19 +99,11 @@ private:
     double yaw_rate_current_ = 0.0;
     double pitch_current_ = 0.0;
 
-    const double DELTA_T_ = 0.1;         // 요 오차 보정 시간 (s)
-    const double THRUST_HOVER_ = 0.25;        // 호버링 추력 (정규화, 튜닝 필요)
+    const double DELTA_T_ = 0.02;         // 50hz
     const double THRUST_MIN_ = 0.1;
     const double M_ = 1.126;                // 질량 (kg)
-    const double KF_THRUST_SCALE_ = 24; // 추력 정규화 계수 (튜닝 필요) 
-    const double POS_ERR_THRESHOLD_NORM_ = 0.4;  // position error threshold
-    const double PITCH_MAX = M_PI / 12.0;
-    const double PITCH_MIN = -M_PI / 12.0;
-    // 전방 가속도 제어 게인 (튜닝 필요)
-    const double Kp_P_ = 0.06;
-    const double Kp_V_ = 0.07;
-    const double Ki_V_ = 0.01;
-    const double Kd_V_ = 0.5;
+    const double PITCH_MAX = M_PI / 4.0;
+    const double PITCH_MIN = -M_PI / 4.0;
 
     const double VEL_INTEGRAL_MIN_ = -0.5;
     const double VEL_INTEGRAL_MAX_ = 0.5;
@@ -102,6 +122,7 @@ private:
     // --- 설정 및 유틸리티 함수 ---
     void offboard_mode();
     void setup_mpc();
+    rcl_interfaces::msg::SetParametersResult on_parameters_set(const std::vector<rclcpp::Parameter> &parameters);
 
     void get_rpy_from_ros_quaternion(const geometry_msgs::msg::Quaternion& q, double& roll, double& pitch, double& yaw);
     double unwrap_angle_diff(double ref_angle, double last_angle);
@@ -114,6 +135,115 @@ Mpc::Mpc() : Node("mpc_controller_node") {
     X_ref_val_ = DM::zeros(4, N_ + 1);
     X_ref_unwrapped_ = DM::zeros(4, N_ + 1);
     current_velocity_ = DM::zeros(3, 1);
+
+    // Dynamic Reconfigurable Parameters
+    auto thrust_hover_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    thrust_hover_desc.description = "Hover thrust for the vehicle.";
+    rcl_interfaces::msg::FloatingPointRange thrust_hover_range;
+    thrust_hover_range.set__from_value(0.0).set__to_value(1.0);
+    thrust_hover_desc.floating_point_range = {thrust_hover_range};
+    this->declare_parameter("thrust_hover", 0.4, thrust_hover_desc);
+
+    auto kf_thrust_scale_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    kf_thrust_scale_desc.description = "Thrust scale factor.";
+    rcl_interfaces::msg::FloatingPointRange kf_thrust_scale_range;
+    kf_thrust_scale_range.set__from_value(0.0).set__to_value(50.0);
+    kf_thrust_scale_desc.floating_point_range = {kf_thrust_scale_range};
+    this->declare_parameter("kf_thrust_scale", 24.0, kf_thrust_scale_desc);
+
+    auto kp_p_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    kp_p_desc.description = "Proportional gain for position.";
+    rcl_interfaces::msg::FloatingPointRange kp_p_range;
+    kp_p_range.set__from_value(0.0).set__to_value(1.0);
+    kp_p_desc.floating_point_range = {kp_p_range};
+    this->declare_parameter("kp_p", 0.05, kp_p_desc);
+
+    auto kp_v_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    kp_v_desc.description = "Proportional gain for velocity.";
+    rcl_interfaces::msg::FloatingPointRange kp_v_range;
+    kp_v_range.set__from_value(0.0).set__to_value(1.0);
+    kp_v_desc.floating_point_range = {kp_v_range};
+    this->declare_parameter("kp_v", 0.5, kp_v_desc);
+
+    auto ki_v_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    ki_v_desc.description = "Integral gain for velocity.";
+    rcl_interfaces::msg::FloatingPointRange ki_v_range;
+    ki_v_range.set__from_value(0.0).set__to_value(1.0);
+    ki_v_desc.floating_point_range = {ki_v_range};
+    this->declare_parameter("ki_v", 0.01, ki_v_desc);
+
+    auto kd_v_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    kd_v_desc.description = "Derivative gain for velocity.";
+    rcl_interfaces::msg::FloatingPointRange kd_v_range;
+    kd_v_range.set__from_value(0.0).set__to_value(1.0);
+    kd_v_desc.floating_point_range = {kd_v_range};
+    this->declare_parameter("kd_v", 0.01, kd_v_desc);
+
+    auto q_xyz_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    q_xyz_desc.description = "Weight for position in MPC.";
+    rcl_interfaces::msg::FloatingPointRange q_xyz_range;
+    q_xyz_range.set__from_value(0.0).set__to_value(100.0);
+    q_xyz_desc.floating_point_range = {q_xyz_range};
+    this->declare_parameter("q_xyz", 8.0, q_xyz_desc);
+
+    auto q_yaw_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    q_yaw_desc.description = "Weight for yaw in MPC.";
+    rcl_interfaces::msg::FloatingPointRange q_yaw_range;
+    q_yaw_range.set__from_value(0.0).set__to_value(100.0);
+    q_yaw_desc.floating_point_range = {q_yaw_range};
+    this->declare_parameter("q_yaw", 8.0, q_yaw_desc);
+
+    auto r_vxyz_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    r_vxyz_desc.description = "Weight for velocity in MPC.";
+    rcl_interfaces::msg::FloatingPointRange r_vxyz_range;
+    r_vxyz_range.set__from_value(0.0).set__to_value(100.0);
+    r_vxyz_desc.floating_point_range = {r_vxyz_range};
+    this->declare_parameter("r_vxyz", 0.8, r_vxyz_desc);
+
+    auto r_yaw_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    r_yaw_desc.description = "Weight for yaw rate in MPC.";
+    rcl_interfaces::msg::FloatingPointRange r_yaw_range;
+    r_yaw_range.set__from_value(0.0).set__to_value(100.0);
+    r_yaw_desc.floating_point_range = {r_yaw_range};
+    this->declare_parameter("r_yaw", 0.8, r_yaw_desc);
+
+    auto r_delta_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    r_delta_desc.description = "Weight for smoothness in MPC.";
+    rcl_interfaces::msg::FloatingPointRange r_delta_range;
+    r_delta_range.set__from_value(0.0).set__to_value(100.0);
+    r_delta_desc.floating_point_range = {r_delta_range};
+    this->declare_parameter("r_delta", 8.0, r_delta_desc);
+    
+    auto pos_err_threshold_norm_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    pos_err_threshold_norm_desc.description = "Position error norm threshold for yaw tracking in terrestrial mode.";
+    rcl_interfaces::msg::FloatingPointRange pos_err_threshold_norm_range;
+    pos_err_threshold_norm_range.set__from_value(0.0).set__to_value(1.5);
+    pos_err_threshold_norm_desc.floating_point_range = {pos_err_threshold_norm_range};
+    this->declare_parameter("pos_err_threshold_norm", 1.0, pos_err_threshold_norm_desc);
+
+    auto step_size_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    step_size_desc.description = "Step size for terrestrial mode";
+    rcl_interfaces::msg::FloatingPointRange step_size_range;
+    step_size_range.set__from_value(1.0).set__to_value(29.0);
+    step_size_desc.floating_point_range = {step_size_range};
+    this->declare_parameter("step_size", 12.0, step_size_desc);
+
+    this->get_parameter("thrust_hover", THRUST_HOVER_);
+    this->get_parameter("kf_thrust_scale", KF_THRUST_SCALE_);
+    this->get_parameter("kp_p", Kp_P_);
+    this->get_parameter("kp_v", Kp_V_);
+    this->get_parameter("ki_v", Ki_V_);
+    this->get_parameter("kd_v", Kd_V_);
+    this->get_parameter("q_xyz", Q_xyz_);
+    this->get_parameter("q_yaw", Q_yaw_);
+    this->get_parameter("r_vxyz", R_vxyz_);
+    this->get_parameter("r_yaw", R_yaw_);
+    this->get_parameter("r_delta", R_delta_);
+    this->get_parameter("pos_err_threshold_norm", POS_ERR_THRESHOLD_NORM_);
+    this->get_parameter("step_size", Step_Size_);
+
+    parameters_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&Mpc::on_parameters_set, this, std::placeholders::_1));
 
     // ROS 2 publisher, subscriber, timer 초기화
     
@@ -141,6 +271,14 @@ Mpc::Mpc() : Node("mpc_controller_node") {
 
     optimal_path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
         "optimal_path", 10);
+    
+    // -- for parameter tuning --
+    debug_vel_pub_ = this->create_publisher<geometry_msgs::msg::Vector3Stamped>(
+        "debug_velocity", 10);
+    
+    debug_yaw_pub_ = this->create_publisher<geometry_msgs::msg::Vector3Stamped>(
+        "debug_yaw_rate", 10);
+    // --------------------------
 
     arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
     set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
@@ -173,9 +311,9 @@ void Mpc::setup_mpc() {
     // 3. 비용 함수 (Cost Function)
     MX cost = 0;
     // 가중치 행렬 (NED 기준)
-    DM Q = DM::diag({2.0, 2.0, 2.0, 2.0});  // [x, y, z, yaw] 오차
-    DM R = DM::diag({0.8, 0.8, 0.8, 0.8});  // [vx, vy, vz, yaw_rate] 사용량
-    DM R_Delta = DM::diag({0.1, 0.1, 0.1, 0.1}); // smoothness 가중치
+    DM Q = DM::diag({Q_xyz_, Q_xyz_, Q_xyz_, Q_yaw_});      // [x, y, z, yaw] 오차
+    DM R = DM::diag({R_vxyz_, R_vxyz_, R_vxyz_, R_yaw_});      // [vx, vy, vz, yaw_rate] 사용량
+    DM R_Delta = DM::diag({R_delta_, R_delta_, R_delta_, R_delta_}); // smoothness 가중치
     DM P = Q;  // 터미널 가중치
 
     Slice all;
@@ -201,12 +339,12 @@ void Mpc::setup_mpc() {
     // 지상모드 제약
     DM u_min, u_max;
     if (current_mode_ == Mode::TERRESTRIAL) {
-        u_min = DM::vertcat({-1.0, -1.0, -0.0, -0.5}); // vx, vy, vz, yaw_rate
-        u_max = DM::vertcat({ 1.0,  1.0,  0.0,  0.5}); // vx, vy, vz, yaw_rate
+        u_min = DM::vertcat({-2.0, -2.0, -2.0, -0.5}); // vx, vy, vz, yaw_rate
+        u_max = DM::vertcat({ 2.0,  2.0,  2.0,  0.5}); // vx, vy, vz, yaw_rate
     } else {
         // 동역학 제약 (x_{k+1} = x_k + dt * u_k) + 제어 입력 제약
-        u_min = DM::vertcat({-1.0, -1.0, -1.0, -0.5}); // vx, vy, vz, yaw_rate
-        u_max = DM::vertcat({ 1.0,  1.0,  1.0,  0.5}); // vx, vy, vz, yaw_rate
+        u_min = DM::vertcat({-2.0, -2.0, -2.0, -0.5}); // vx, vy, vz, yaw_rate
+        u_max = DM::vertcat({ 2.0,  2.0,  2.0,  0.5}); // vx, vy, vz, yaw_rate
     }
     for (int k = 0; k < N_; ++k) {
         opti_.subject_to(X_(all, k + 1) == X_(all, k) + dt_ * U_(all, k));
@@ -224,6 +362,84 @@ void Mpc::setup_mpc() {
     opti_.solver("ipopt", solver_opts);
 
     // RCLCPP_INFO(this->get_logger(), "MPC (4-State, 4-Control).");
+}
+
+rcl_interfaces::msg::SetParametersResult Mpc::on_parameters_set(const std::vector<rclcpp::Parameter> &parameters)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    result.reason = "success";
+
+    for (const auto &param : parameters)
+    {
+        if (param.get_name() == "thrust_hover")
+        {
+            THRUST_HOVER_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'thrust_hover' updated to: %f", THRUST_HOVER_);
+        }
+        else if (param.get_name() == "kf_thrust_scale")
+        {
+            KF_THRUST_SCALE_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'kf_thrust_scale' updated to: %f", KF_THRUST_SCALE_);
+        }
+        else if (param.get_name() == "kp_p")
+        {
+            Kp_P_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'kp_p' updated to: %f", Kp_P_);
+        }
+        else if (param.get_name() == "kp_v")
+        {
+            Kp_V_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'kp_v' updated to: %f", Kp_V_);
+        }
+        else if (param.get_name() == "ki_v")
+        {
+            Ki_V_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'ki_v' updated to: %f", Ki_V_);
+        }
+        else if (param.get_name() == "kd_v")
+        {
+            Kd_V_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'kd_v' updated to: %f", Kd_V_);
+        }
+        else if (param.get_name() == "q_xyz")
+        {
+            Q_xyz_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'q_xyz' updated to: %f", Q_xyz_);
+        }
+        else if (param.get_name() == "q_yaw")
+        {
+            Q_yaw_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'q_yaw' updated to: %f", Q_yaw_);
+        }
+        else if (param.get_name() == "r_vxyz")
+        {
+            R_vxyz_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'r_vxyz' updated to: %f", R_vxyz_);
+        }
+        else if (param.get_name() == "r_yaw")
+        {
+            R_yaw_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'r_yaw' updated to: %f", R_yaw_);
+        }
+        else if (param.get_name() == "r_delta")
+        {
+            R_delta_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'r_delta' updated to: %f", R_delta_);
+        }
+        else if (param.get_name() == "pos_err_threshold_norm")
+        {
+            POS_ERR_THRESHOLD_NORM_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'pos_err_threshold_norm' updated to: %f", POS_ERR_THRESHOLD_NORM_);
+        }
+        else if (param.get_name() == "step_size")
+        {
+            Step_Size_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter 'step_size' updated to: %f", Step_Size_);
+        }
+    }
+
+    return result;
 }
 
 void Mpc::state_callback(const mavros_msgs::msg::State::SharedPtr msg) {
@@ -245,9 +461,7 @@ void Mpc::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     current_velocity_(2) = msg->twist.twist.linear.z; // vz
     
     // body frame 기준 vx 계산 (지상 모드용)
-    double c_y = cos(yaw);
-    double s_y = sin(yaw);
-    vx_body_current_ = (double)current_velocity_(0) * c_y + (double)current_velocity_(1) * s_y;
+    vx_body_current_ = (double)current_velocity_(0);
 
     yaw_rate_current_ = msg->twist.twist.angular.z;
 
@@ -303,9 +517,6 @@ void Mpc::control_loop_callback() {
         return;
     }
 
-    offboard_mode();
-    uint64_t timestamp_now = this->get_clock()->now().nanoseconds() / 1000;
-
     try {
         X_ref_unwrapped_ = X_ref_val_; // x, y, z 값 복사
         double current_yaw = (double)current_state_(3);
@@ -360,27 +571,31 @@ void Mpc::control_loop_callback() {
             vel_msg.twist.angular.z = (double)u_optimal(3);
             setpoint_pub_->publish(vel_msg);
         } else {  // Mode::TERRESTRIAL
-            DM x_ref_k1 = sol.value(X_(Slice(), 19)); // MPC가 계획한 17 스텝 상태 [x, y, z, yaw]
+            DM x_ref_k1 = sol.value(X_(Slice(), Step_Size_)); // MPC가 계획한 17 스텝 상태 [x, y, z, yaw]
             DM u_ref_k1 = sol.value(U_(Slice(), 1)); // MPC가 계획한 1스텝 제어입력 [vx, vy, vz, yaw_rate]
 
             double yaw_ref_k1 = (double)x_ref_k1(3);
             double x_err = (double)x_ref_k1(0) - (double)current_state_(0);
             double y_err = (double)x_ref_k1(1) - (double)current_state_(1);
             // RCLCPP_INFO(this->get_logger(), "1step - x : %f, y : %f", (double)x_ref_k1(0), (double)x_ref_k1(1));
-            double yaw_err = unwrap_angle_diff(yaw_ref_k1, (double)current_state_(3));
-            double pos_err_norm = std::sqrt(std::pow(x_err, 2) + std::pow(y_err, 2) + std::pow(yaw_err, 2)); // L2(euclidian) norm
-            RCLCPP_INFO(this->get_logger(), "pos error norm: %f", pos_err_norm);
+            double pos_err_norm = std::sqrt(std::pow(x_err, 2) + std::pow(y_err, 2)); // L2(euclidian) norm
+            // RCLCPP_INFO(this->get_logger(), "pos error norm: %f", pos_err_norm);
            
             // yaw control
             double yaw_desired_I;
-            // RCLCPP_INFO(this->get_logger(), "pos error norm : %f", pos_err_norm);
-            if (pos_err_norm <= POS_ERR_THRESHOLD_NORM_) {
-                yaw_desired_I = yaw_ref_k1;
-                RCLCPP_INFO(this->get_logger(), "yaw_ref : %f", yaw_desired_I);
-            } else {
-                yaw_desired_I = atan2(y_err, x_err);
-                RCLCPP_INFO(this->get_logger(), "atan2 : %f", yaw_desired_I);
-            }
+            double error_ratio = std::clamp(pos_err_norm / POS_ERR_THRESHOLD_NORM_, 0.0, 1.0);
+            double yaw_direct = atan2(y_err, x_err);
+            double yaw_diff = unwrap_angle_diff(yaw_direct, yaw_ref_k1);
+            yaw_desired_I = yaw_ref_k1 + (error_ratio * yaw_diff);
+            RCLCPP_INFO(this->get_logger(), "PosErr: %.2f | Ratio: %.2f | FinalYaw: %.2f", 
+             pos_err_norm, error_ratio, yaw_desired_I);
+            // if (pos_err_norm <= POS_ERR_THRESHOLD_NORM_) {
+            //     yaw_desired_I = yaw_ref_k1;
+            //     RCLCPP_INFO(this->get_logger(), "yaw_ref : %f", yaw_desired_I);
+            // } else {
+            //     yaw_desired_I = atan2(y_err, x_err);
+            //     RCLCPP_INFO(this->get_logger(), "atan2 : %f", yaw_desired_I);
+            // }
             // RCLCPP_INFO(this->get_logger(), "current_yaw : %f", (double)current_state_(3));
             // RCLCPP_INFO(this->get_logger(), "target yaw : %f", yaw_desired_I);
 
@@ -421,7 +636,7 @@ void Mpc::control_loop_callback() {
             double yaw_enu = yaw_desired_I;
             yaw_enu = atan2(sin(yaw_enu), cos(yaw_enu));
 
-            RCLCPP_INFO(this->get_logger(), "| Thrust: %f | Pitch: %f | Yaw: %f |", thrust_cmd, pitch_enu, yaw_enu);
+            // RCLCPP_INFO(this->get_logger(), "| Thrust: %f | Pitch: %f | Yaw: %f |", thrust_cmd, pitch_enu, yaw_enu);
 
             mavros_msgs::msg::AttitudeTarget att_msg;
             att_msg.header.stamp = this->get_clock()->now();
@@ -437,11 +652,25 @@ void Mpc::control_loop_callback() {
             att_setpoint_pub_->publish(att_msg);
 
             // RCLCPP_INFO(this->get_logger(), "command | thrust: %f", thrust_cmd);
+
+            // -- for parameter tuning --
+            auto debug_vel_msg = geometry_msgs::msg::Vector3Stamped();
+            debug_vel_msg.header.stamp = this->get_clock()->now();
+            debug_vel_msg.vector.x = vx_ref_body;
+            debug_vel_msg.vector.y = vx_body_current_;
+            debug_vel_pub_->publish(debug_vel_msg);
+
+            auto debug_yaw_msg = geometry_msgs::msg::Vector3Stamped();
+            debug_yaw_msg.header.stamp = this->get_clock()->now();
+            debug_yaw_msg.vector.x = (double)u_ref_k1(3);
+            debug_yaw_msg.vector.y = yaw_rate_current_;
+            debug_yaw_pub_->publish(debug_yaw_msg);
         }
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "MPC optimization failed: %s", e.what());
         return;
     }
+    offboard_mode();
 }
 
 void Mpc::offboard_mode() {

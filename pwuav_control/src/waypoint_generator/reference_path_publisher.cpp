@@ -17,7 +17,7 @@ public:
     {
         this->declare_parameter<int>("horizon_length", 30);
         this->declare_parameter<double>("publish_rate", 20);
-        this->declare_parameter<double>("v_mean", 0.25);
+        this->declare_parameter<double>("v_mean", 0.55);
 
         horizon_length_ = this->get_parameter("horizon_length").as_int();
         publish_rate_ = this->get_parameter("publish_rate").as_double();
